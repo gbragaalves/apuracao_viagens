@@ -10,11 +10,12 @@ pacman::p_load(
   basemapR,
   pbapply,
   lubridate,
-  bigrquery
+  bigrquery,
+  stringr
 )
 
 ano_apurar <- "2023"
-mes_apurar <- "05"
+mes_apurar <- "06"
 
 ano_gtfs <- "2023"
 mes_gtfs <- "06"
@@ -35,120 +36,119 @@ gtfs$shapes <- as.data.table(gtfs$shapes) %>%
 
 linhas <- gtfs$routes %>%
   filter(route_type == "702") %>%
-  select(route_short_name) %>%
   arrange() %>%
-  unlist()
+  pull(route_short_name)
 
-data_ref <- as.Date(paste0(ano_apurar, "-", mes_apurar, "-01"))
+data_ref <- as.Date(paste(ano_apurar, mes_apurar, "01", sep = "-"))
 
-pasta_ano <- paste0("../../dados/viagens/brt/", ano_apurar)
-ifelse(!dir.exists(file.path(getwd(), pasta_ano)),
-  dir.create(file.path(getwd(), pasta_ano), recursive = T), FALSE
-)
+pasta_ano <- file.path("../../dados/viagens/brt", ano_apurar)
+if (!dir.exists(pasta_ano)) {
+  dir.create(pasta_ano, recursive = TRUE)
+}
 
-pasta_mes <-
-  paste0(
-    pasta_ano,
-    "/",
-    mes_apurar,
-    "/"
-  )
-
-ifelse(!dir.exists(file.path(getwd(), pasta_mes)),
-  dir.create(file.path(getwd(), pasta_mes)), FALSE
-)
+pasta_mes <- file.path(pasta_ano, mes_apurar)
+if (!dir.exists(pasta_mes)) {
+  dir.create(pasta_mes)
+}
 
 linhas_lista <- paste(linhas, collapse = "','")
 
 data_texto <- as.character(data_ref)
 data_fim <- data_ref + months(1)
 
-pasta_ano <- paste0("../../dados/gps/brt/", ano_apurar)
-ifelse(!dir.exists(file.path(getwd(), pasta_ano)),
-  dir.create(file.path(getwd(), pasta_ano), recursive = T), FALSE
-)
+pasta_ano_gps <- file.path("../../dados/gps/brt", ano_apurar)
+if (!dir.exists(pasta_ano_gps)) {
+  dir.create(pasta_ano_gps, recursive = TRUE)
+}
 
-end_gps_brt <- paste0(
-  "../../dados/gps/brt/", ano_apurar, "/gps_brt_",
-  ano_apurar, "-", mes_apurar, ".RDS"
-)
+pasta_mes_gps <- file.path(pasta_ano_gps, mes_apurar)
+if (!dir.exists(pasta_mes_gps)) {
+  dir.create(pasta_mes_gps)
+}
 
-if (file.exists(end_gps_brt)) {
-  registros_gps_brt <- readRDS(end_gps_brt)
-} else {
-  query_gps <-
-    paste0(
-      "SELECT timestamp_gps,id_veiculo,servico,latitude,longitude,tipo_parada FROM `rj-smtr.br_rj_riodejaneiro_veiculos.gps_brt` where data BETWEEN '",
-      data_texto,
-      "' AND '", data_fim, "' AND servico IN ('",
-      linhas_lista,
-      "')"
+data_fim_limite <- Sys.Date() - 2
+
+gps_mes <- data.frame()
+
+data <- data_ref
+
+dias_loop <- seq(data_ref, data_fim, by = "day")
+
+for (data in dias_loop) {
+  arquivo_gps <- file.path(pasta_mes_gps, paste0("gps_brt_", as_date(data), ".RDS"))
+  
+  if (file.exists(arquivo_gps)) {
+    registros_gps <- readRDS(arquivo_gps)
+    gps_mes <- bind_rows(gps_mes, registros_gps)
+  } else {
+    query_gps <- glue::glue(
+      "SELECT timestamp_gps, id_veiculo, servico, latitude, longitude, tipo_parada 
+        FROM `rj-smtr.br_rj_riodejaneiro_veiculos.gps_brt` 
+        WHERE data = '{as_date(data)}' AND servico IN ('{linhas_lista}')"
     )
-
-  registros_gps_brt <- basedosdados::read_sql(query_gps)
-
-  saveRDS(registros_gps_brt, end_gps_brt)
+    
+    registros_gps <- basedosdados::read_sql(query_gps)
+    
+    saveRDS(registros_gps, arquivo_gps)
+    
+    gps_mes <- bind_rows(gps_mes, registros_gps)
+  }
+  
+  if (data == data_fim_limite) {
+    break 
+  }
 }
 
 viagens_freq <- gtfs$frequencies %>%
   mutate(start_time = if_else(lubridate::hour(hms(start_time)) >= 24,
-    hms(start_time) - lubridate::hours(24),
-    hms(start_time)
+                              hms(start_time) - lubridate::hours(24),
+                              hms(start_time)
   )) %>%
   mutate(end_time = if_else(lubridate::hour(hms(end_time)) >= 24,
-    hms(end_time) - lubridate::hours(24),
-    hms(end_time)
+                            hms(end_time) - lubridate::hours(24),
+                            hms(end_time)
   )) %>%
-  mutate(
-    start_time = paste(sprintf("%02d", lubridate::hour(start_time)),
-      sprintf("%02d", lubridate::minute(start_time)),
-      sprintf("%02d", lubridate::second(start_time)),
-      sep = ":"
-    ),
-    end_time = paste(sprintf("%02d", lubridate::hour(end_time)),
-      sprintf("%02d", lubridate::minute(end_time)),
-      sprintf("%02d", lubridate::second(end_time)),
-      sep = ":"
-    )
+  mutate(start_time = paste(sprintf("%02d", lubridate::hour(start_time)),
+                            sprintf("%02d", lubridate::minute(start_time)),
+                            sprintf("%02d", lubridate::second(start_time)),
+                            sep = ":"
+  ),
+  end_time = paste(sprintf("%02d", lubridate::hour(end_time)),
+                   sprintf("%02d", lubridate::minute(end_time)),
+                   sprintf("%02d", lubridate::second(end_time)),
+                   sep = ":"
+  )
   ) %>%
-  mutate(
-    start_time = as.POSIXct(start_time,
-      format = "%H:%M:%S", origin =
-        "1970-01-01"
-    ),
-    end_time = as.POSIXct(end_time,
-      format = "%H:%M:%S", origin =
-        "1970-01-01"
-    )
+  mutate(start_time = as.POSIXct(start_time, format = "%H:%M:%S", origin = "1970-01-01"),
+         end_time = as.POSIXct(end_time, format = "%H:%M:%S", origin = "1970-01-01")
   ) %>%
   mutate(start_time = if_else(as.ITime(start_time) < as.ITime("02:00:00"),
-    start_time + 86400,
-    start_time
+                              start_time + 86400,
+                              start_time
   )) %>%
   mutate(end_time = if_else(end_time < start_time,
-    end_time + 86400,
-    end_time
+                            end_time + 86400,
+                            end_time
   )) %>%
-  mutate(
-    duracao = as.integer(difftime(end_time, start_time, units = "secs")),
-    partidas = as.integer(duracao / headway_secs)
+  mutate(duracao = as.integer(difftime(end_time, start_time, units = "secs")),
+         partidas = as.integer(duracao / headway_secs)
   )
+
 
 trips_manter <- gtfs$trips %>%
   mutate(
-    letras = stringr::str_extract(trip_short_name, "[A-Z]+"),
-    numero = stringr::str_extract(trip_short_name, "[0-9]+")
+    letras = str_extract(trip_short_name, "[A-Z]+"),
+    numero = str_extract(trip_short_name, "[0-9]+")
   ) %>%
   tidyr::unite(., trip_short_name, letras, numero, na.rm = T, sep = "") %>%
-  left_join(select(viagens_freq, trip_id, partidas)) %>%
+  left_join(select(viagens_freq, trip_id, partidas), by = "trip_id") %>%
   mutate(partidas = if_else(is.na(partidas), 1, partidas)) %>%
   group_by(shape_id) %>%
   mutate(ocorrencias = sum(partidas)) %>%
-  ungroup() %>%
   group_by(route_id, direction_id) %>%
   slice_max(ocorrencias, n = 1) %>%
   ungroup() %>%
-  distinct(shape_id, trip_short_name, .keep_all = T) %>%
+  distinct(shape_id, trip_short_name, .keep_all = TRUE) %>%
   select(trip_id, trip_short_name, shape_id, direction_id)
 
 gtfs <- filter_by_trip_id(gtfs, trips_manter$trip_id)
@@ -159,8 +159,7 @@ apuracao <- function(linha) {
     group_by(direction_id) %>%
     slice(1) %>%
     ungroup() %>%
-    select(trip_id) %>%
-    unlist()
+    pull(trip_id)
 
   gtfs_filt <- filter_by_trip_id(gtfs, trips_filtrar)
 
@@ -203,7 +202,7 @@ apuracao <- function(linha) {
     st_buffer(150) %>%
     st_transform(4326)
 
-  registros_gps_linha <- registros_gps_brt %>%
+  registros_gps_linha <- gps_mes %>%
     filter(servico == linha)
 
   if (nrow(registros_gps_linha) > 0) {
@@ -236,7 +235,7 @@ apuracao <- function(linha) {
       mutate(direction_id = case_when(
         anterior == "inicio" & posterior == "final" ~ 0,
         anterior == "final" & posterior == "inicio" ~ 1,
-        TRUE ~ NA
+        TRUE ~ NA_integer_
       )) %>%
       filter(!is.na(direction_id)) %>%
       ungroup() %>%
@@ -284,9 +283,8 @@ apuracao <- function(linha) {
     registros_em_garagem <- gps_sf %>%
       select(id_viagem, tipo_parada) %>%
       st_drop_geometry() %>%
-      group_by(id_viagem) %>%
       filter(tipo_parada == "garagem") %>%
-      summarise(registros_em_garagem = n())
+      count(id_viagem, name = "registros_em_garagem")
 
     gps_sf <- gps_sf %>%
       left_join(registros_em_garagem) %>%
@@ -386,27 +384,28 @@ apuracao <- function(linha) {
       summarise(media_viagens = round(mean(quantidade_viagens))) %>%
       arrange(desc(tipo_dia), direction_id, faixa_horaria)
 
-    pasta_viagens_brutas <- paste0(pasta_mes, "brutas/")
-
-    ifelse(!dir.exists(file.path(getwd(), pasta_viagens_brutas)),
-      dir.create(file.path(getwd(), pasta_viagens_brutas), recursive = T), FALSE
-    )
-
-    pasta_viagens_validas <- paste0(pasta_mes, "validas/")
-
-    ifelse(!dir.exists(file.path(getwd(), pasta_viagens_validas)),
-      dir.create(file.path(getwd(), pasta_viagens_validas), recursive = T), FALSE
-    )
-
-    end_linha_bruto <- paste0(pasta_viagens_brutas, "/linha-", linha, "_", data_texto)
-    end_linha_validas <- paste0(pasta_viagens_validas, "/linha-", linha, "_", data_texto)
-    end_linha <- paste0(pasta_mes, "/sumario_linha-", linha, "_", data_texto)
-
+    pasta_viagens_brutas <- file.path(pasta_mes, "brutas")
+    
+    if (!dir.exists(pasta_viagens_brutas)) {
+      dir.create(pasta_viagens_brutas, recursive = TRUE)
+    }
+    
+    pasta_viagens_validas <- file.path(pasta_mes, "validas")
+    
+    if (!dir.exists(pasta_viagens_validas)) {
+      dir.create(pasta_viagens_validas, recursive = TRUE)
+    }
+    
+    end_linha_bruto <- file.path(pasta_viagens_brutas, paste0("linha-", linha, "_", data_texto))
+    end_linha_validas <- file.path(pasta_viagens_validas, paste0("linha-", linha, "_", data_texto))
+    end_linha <- file.path(pasta_mes, paste0("sumario_linha-", linha, "_", data_texto))
+    
     end_viagens <- paste0(end_linha_bruto, ".csv")
     end_viagens_limpo <- paste0(end_linha_validas, ".csv")
     end_sumario <- paste0(end_linha, ".csv")
 
     fwrite(viagens, end_viagens)
+    
     if (nrow(viagens_validas) > 0) {
       fwrite(viagens_validas, end_viagens_limpo)
     }

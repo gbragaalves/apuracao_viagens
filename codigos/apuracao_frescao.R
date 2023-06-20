@@ -10,7 +10,8 @@ pacman::p_load(
   basemapR,
   pbapply,
   lubridate,
-  bigrquery
+  bigrquery,
+  stringr
 )
 
 ano_apurar <- "2023"
@@ -35,59 +36,67 @@ gtfs$shapes <- as.data.table(gtfs$shapes) %>%
 
 linhas <- gtfs$routes %>%
   filter(route_type == "200") %>%
-  select(route_short_name) %>%
   arrange() %>%
-  unlist()
+  pull(route_short_name)
+  
+data_ref <- as.Date(paste(ano_apurar, mes_apurar, "01", sep = "-"))
 
-data_ref <- as.Date(paste0(ano_apurar, "-", mes_apurar, "-01"))
+pasta_ano <- file.path("../../dados/viagens/frescao", ano_apurar)
+if (!dir.exists(pasta_ano)) {
+  dir.create(pasta_ano, recursive = TRUE)
+}
 
-pasta_ano <- paste0("../../dados/viagens/frescao/", ano_apurar)
-ifelse(!dir.exists(file.path(getwd(), pasta_ano)),
-  dir.create(file.path(getwd(), pasta_ano), recursive = T), FALSE
-)
-
-pasta_mes <-
-  paste0(
-    pasta_ano,
-    "/",
-    mes_apurar,
-    "/"
-  )
-
-ifelse(!dir.exists(file.path(getwd(), pasta_mes)),
-  dir.create(file.path(getwd(), pasta_mes)), FALSE
-)
+pasta_mes <- file.path(pasta_ano, mes_apurar)
+if (!dir.exists(pasta_mes)) {
+  dir.create(pasta_mes)
+}
 
 linhas_lista <- paste(linhas, collapse = "','")
 
 data_texto <- as.character(data_ref)
 data_fim <- data_ref + months(1)
 
-pasta_ano <- paste0("../../dados/gps/frescao/", ano_apurar)
-ifelse(!dir.exists(file.path(getwd(), pasta_ano)),
-  dir.create(file.path(getwd(), pasta_ano), recursive = T), FALSE
-)
+pasta_ano_gps <- file.path("../../dados/gps/frescao", ano_apurar)
+if (!dir.exists(pasta_ano_gps)) {
+  dir.create(pasta_ano_gps, recursive = TRUE)
+}
 
-end_gps_frescao <- paste0(
-  "../../dados/gps/frescao/", ano_apurar, "/gps_frescao_",
-  ano_apurar, "-", mes_apurar, ".RDS"
-)
+pasta_mes_gps <- file.path(pasta_ano_gps, mes_apurar)
+if (!dir.exists(pasta_mes_gps)) {
+  dir.create(pasta_mes_gps)
+}
 
-if (file.exists(end_gps_frescao)) {
-  registros_gps_frescao <- readRDS(end_gps_frescao)
-} else {
-  query_gps <-
-    paste0(
-      "SELECT timestamp_gps,id_veiculo,servico,latitude,longitude,tipo_parada FROM `rj-smtr.br_rj_riodejaneiro_veiculos.gps_sppo` where data BETWEEN '",
-      data_texto,
-      "' AND '", data_fim, "' AND servico IN ('",
-      linhas_lista,
-      "')"
+data_fim_limite <- Sys.Date() - 2
+
+gps_mes <- data.frame()
+
+data <- data_ref
+
+dias_loop <- seq(data_ref, data_fim, by = "day")
+
+for (data in dias_loop) {
+  arquivo_gps <- file.path(pasta_mes_gps, paste0("gps_frescao_", as_date(data), ".RDS"))
+  
+  if (file.exists(arquivo_gps)) {
+    registros_gps <- readRDS(arquivo_gps)
+    gps_mes <- bind_rows(gps_mes, registros_gps)
+  } else {
+    query_gps <- glue::glue(
+      "SELECT timestamp_gps,id_veiculo,servico,latitude,longitude,tipo_parada 
+        FROM `rj-smtr.br_rj_riodejaneiro_veiculos.gps_sppo` 
+        WHERE data = '{as_date(data)}' AND servico IN ('{linhas_lista}')"
     )
-
-  registros_gps_frescao <- basedosdados::read_sql(query_gps)
-
-  saveRDS(registros_gps_frescao, end_gps_frescao)
+    
+    registros_gps <- basedosdados::read_sql(query_gps)
+    
+    saveRDS(registros_gps, arquivo_gps)
+    
+    gps_mes <- bind_rows(gps_mes, registros_gps)
+  }
+  
+  if (data == data_fim_limite) {
+    break 
+  }
 }
 
 viagens_freq <- gtfs$frequencies %>%
@@ -203,7 +212,7 @@ apuracao <- function(linha) {
     st_buffer(150) %>%
     st_transform(4326)
 
-  registros_gps_linha <- registros_gps_frescao %>%
+  registros_gps_linha <- gps_mes %>%
     filter(servico == linha)
 
   if (nrow(registros_gps_linha) > 0) {
